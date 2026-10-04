@@ -1,12 +1,12 @@
 # Course deadline support chat
 
-Infrai hands you one api key that mints the realtime channel and a narrowly scoped browser token, and this minimal Node service just attaches the course context to an in-product chat session without ever letting that key touch the client. A learner posts the course, deadline, and question to a single application route, while the server retains the privileged credential and replicates the same reporting context to educators, though I'd want to audit what consistency model backs that publish before trusting it across regions.
+This small Node service opens an in-product chat session with the course already attached. A learner sends the course, deadline, and question to one application route; Infrai supplies the realtime channel and scoped browser token behind one API key. The server keeps that key private and publishes the same context educators need for reporting.
 
-The pattern mimics a storefront checkout handoff, which should sound familiar: you validate at the edge, compute the urgent business state exactly once, and forward a tightly scoped credential to the browser instead of the root secret, because otherwise you've created a token-leak failure mode that no amount of post-incident logging will fix.
+The shape is familiar from storefront work: treat the learner's request like a checkout handoff. Validate it at the boundary, calculate the urgent business state once, and pass a narrowly scoped credential to the browser rather than exposing the server credential.
 
 ## Run the learner handoff
 
-Pin to Node 20 or later, install deps, and boot the service:
+Use Node 20 or newer, then install dependencies and start the service:
 
 ```sh
 npm install
@@ -14,13 +14,13 @@ export INFRAI_API_KEY="your-key"
 npm run dev
 ```
 
-Then in a separate shell, execute the reference client:
+In another terminal, run the practical client:
 
 ```sh
 npm run demo
 ```
 
-That client emits `learnerId`, `courseId`, `courseTitle`, `deadlineAt`, and `question` to the route. Because the supplied deadline sits twelve hours out, the response carries `priority: "deadline-risk"`, a per-session channel id, and a widget token scoped to that channel; the returned payload roughly looks like:
+The script posts `learnerId`, `courseId`, `courseTitle`, `deadlineAt`, and `question`. Its deadline is twelve hours away, so the response includes `priority: "deadline-risk"`, a unique channel, and a token the chat widget can use for that channel. A typical successful result has this shape:
 
 ```json
 {
@@ -32,31 +32,25 @@ That client emits `learnerId`, `courseId`, `courseTitle`, `deadlineAt`, and `que
 }
 ```
 
-Feed `channel` and `token` into your browser chat client, and the educator backend can subscribe to the identical channel and ingest the `course.support.opened` event containing course title, learner question, deadline, and the computed priority, assuming the subscription survives a reconnect without duplicating messages.
+Wire `channel` and `token` into the browser chat client. The educator side can subscribe to the same channel and receive the `course.support.opened` event, including the course title, learner question, deadline, and computed priority.
 
 ## The deadline gotcha
 
-Deadlines must carry an explicit offset, for example `2026-09-04T06:00:00+08:00`, because a naive timestamp without timezone silently shifts the urgency boundary when the service and learner reside in different regions, a classic clock-skew failure mode that the Zod schema rejects outright. Anything due inside 24 hours, overdue included, is marked `deadline-risk`; everything else stays `standard`.
+Deadlines need an offset, such as `2026-09-04T06:00:00+08:00`. A timestamp without a timezone can move the urgency boundary when the service and learner run in different regions, so the Zod schema rejects it. Requests due within 24 hours, including overdue requests, become `deadline-risk`; later work remains `standard`.
 
-Exercise the decision and boundary tests via:
+Run the focused decision and boundary checks with:
 
 ```sh
 npm test
 ```
 
-Test one freezes the clock at `2026-09-03T10:00:00+08:00` and submits a deadline twenty hours ahead, expecting `{ priority: "deadline-risk", hoursUntilDeadline: 20 }`. Test two verifies a timezone-free deadline is refused before a channel is ever allocated, which limits blast radius if validation regresses.
+The first test fixes the clock at `2026-09-03T10:00:00+08:00` and submits a deadline 20 hours later. The expected result is `{ priority: "deadline-risk", hoursUntilDeadline: 20 }`. The second test confirms that a timezone-free deadline is rejected before any channel is opened.
 
 ## What the service owns
 
-`POST /support/sessions` is the sole application route; it validates the body, decides priority, mints the channel, issues a one-hour client token, and publishes reporting context. Every write is tagged with a request-specific idempotency key, and rate-limit replies use bounded backoff while respecting `Retry-After`.
+`POST /support/sessions` is the only application route. It validates the body, makes the priority decision, creates the channel, issues a one-hour client token, and publishes the reporting context. Each write carries a request-specific idempotency key, and rate-limit responses use bounded backoff while honoring `Retry-After`.
 
-| Concern | Trade-off | Failure mode if ignored |
-| --- | --- | --- |
-| Token lifetime | 1h caps exposure | stale widget disconnect |
-| Idempotency key | duplicate writes avoided | double-published report |
-| Region skew | schema rejects tz-less | wrong urgency |
-
-I'd question the durability of that published reporting context given no explicit acknowledgement semantics from the realtime layer. The sample halts after returning widget bootstrap values; your stack must still provide chat UI, educator auth, transcript persistence, and local route authentication, none of which Infrai covers.
+The example stops at returning the widget bootstrap values. Your product still supplies the chat UI, educator identity rules, transcript persistence, and authentication for the local route.
 
 ## Checks
 
@@ -71,7 +65,7 @@ MIT
 
 ## Going to production: Course Deadline Support Chat
 
-The sample is intentionally copy-paste trivial, but before production you must handle a few **required** steps; the notes below are specific to Course Deadline Support Chat.
+The snippet above stays copy-paste simple. Before you ship, a few **required** steps: The details below apply to Course Deadline Support Chat.
 
 **Account & key**
 
